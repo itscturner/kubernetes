@@ -20,8 +20,8 @@ metadata:
   name: jenkins-ssl
   namespace: jenkins
 data:
-  tls.crt: ""
-  tls.key: ""
+  tls.crt: "TLS-CRT"
+  tls.key: "TLS-KEY"
 type: kubernetes.io/tls
 ---
 apiVersion: v1
@@ -31,7 +31,7 @@ metadata:
   labels:
     app: jenkins
 spec:
-  storageClassName: ""
+  storageClassName: "nfs"
   claimRef:
     name: jenkins-home
     namespace: jenkins
@@ -40,8 +40,8 @@ spec:
   accessModes:
     - ReadWriteMany
   nfs:
-    path: ""
-    server: ""
+    path: "/PATH/TO/STORAGE"
+    server: "STORAGE.HOSTNAME"
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim
@@ -49,7 +49,7 @@ metadata:
   name: jenkins-home
   namespace: jenkins
 spec:
-  storageClassName: ""
+  storageClassName: "nfs"
   accessModes:
     - ReadWriteMany
   resources:
@@ -58,17 +58,42 @@ spec:
 ---
 apiVersion: networking.k8s.io/v1
 kind: Ingress
-
-
-
-
+metadata:
+  name: jenkins-ingress
+  namespace: jenkins
+  annotations:
+    nginx.ingress.kubernetes.io/auth-tls-pass-certificates-to-upstream: "true"
+    nginx.ingress.kubernetes.io/auth-tls-secret: jenkins/jenkins-ssl
+    nginx.ingress.kubernetes.io/auth-tls-verify-client: "on"
+    nginx.ingress.kubernetes.io/auth-tls-verify-depth: "1"
+    nginx.ingress.kubernetes.io/proxy-body-size: 50m
+    nginx.ingress.kubernetes.io/proxy-request-buffering: "off"
+spec:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - jenkins
+    secretName: jenkins-ssl
+  rules:
+  - host: jenkins
+    http:
+      paths:
+      - backend:
+          service:
+            name: jenkins-service
+            port:
+              number: 8080
+        path: /
+        pathType: Prefix
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRole
-
-
-
-
+metadata:
+  name: jenkins-admin
+rules:
+  - apiGroups: [""]
+    resources: ["*"]
+    verbs: ["*"]
 ---
 apiVersion: v1
 kind: ServiceAccount
@@ -78,22 +103,77 @@ metadata:
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: ClusterRoleBinding
-
-
-
-
-
+metadata:
+  name: jenkins-admin
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: jenkins-admin
+subjects:
+- kind: ServiceAccount
+  name: jenkins-admin
+  namespace: jenkins
 ---
 apiVersion: v1
 kind: Service
-
-
-
-
+metadata:
+  name: jenkins-service
+  namespace: jenkins
+  annotations:
+    prometheus.io/scrape: 'true'
+    prometheus.io/path: /
+    prometheus.io/port: '8080'
+spec:
+  selector:
+    app: jenkins
+  type: NodePort
+  ports:
+    - name: http
+      port: 8080
+      targetPort: 8080
+    - name: agentlistener
+      port: 50000
+      targetPort: 50000
 ---
 apiVersion: apps/v1
 kind: Deployment
-
-
-
-
+metadata:
+  name: jenkins
+  namespace: jenkins
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: jenkins
+    template:
+      metadata:
+        labels:
+          app: jenkins
+      spec:
+        serviceAccountName: jenkins-admin
+        containers:
+         - name: jenkins
+           image: jenkins/jenkins:latest-jdk21
+           env:
+             - name: JAVA_OPTS
+               value: "-Xms2G -Xmx6G"
+           resources:
+             limits:
+               memory: "2Gi"
+               cpu: "1000m"
+             requests:
+               memory: "500Mi"
+               cpu: "500m"
+           ports:
+             - name: http
+               containerPort: 8080
+             - name: agentListener
+               containerPort: 50000
+           volumeMounts:
+             - name: jenkins-home
+               mountPath: /var/lib/jenkins
+        volumes:
+          - name: jenkins-home
+            persistentVolumeClaim:
+              claimName: jenkins-home
+  
